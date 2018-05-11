@@ -393,6 +393,7 @@ import MobileCoreServices
         automaticSlideshow.nextSlideActionHandler = { [weak self] in
             self?.slideToNext()
         }
+
         automaticSlideshow.play()
     }
     
@@ -400,7 +401,6 @@ import MobileCoreServices
         super.viewWillDisappear(animated)
         automaticSlideshow.isSuspended = true
     }
-    
 
     open override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -502,16 +502,19 @@ import MobileCoreServices
         let nextPhotoIndex = self.currentPhotoIndex + 1
         let initialPhotoIdex = 0
         if let nextController = (self.makePhotoViewController(for: nextPhotoIndex) ?? self.makePhotoViewController(for: initialPhotoIdex)) {
-            slide(to: nextController, animated: true)
+            loadPhotos(at: nextController.pageIndex)
+            slide(to: nextController, animated: true, completion: { [weak self] (result) in
+                self?.reduceMemoryForPhotos(at: nextController.pageIndex)
+            })
         }
     }
     
-    func slide(to photoViewController: PhotoViewController, animated: Bool) {
-        configure(with: photoViewController, pageIndex: photoViewController.pageIndex, animated: animated)
+    func slide(to photoViewController: PhotoViewController, animated: Bool, completion: ((Bool) -> Swift.Void)? = nil) {
+        configure(with: photoViewController, pageIndex: photoViewController.pageIndex, animated: animated, completion: completion)
     }
     
-    func configure(with viewController: UIViewController, pageIndex: Int, animated: Bool) {
-        self.pageViewController.setViewControllers([viewController], direction: .forward, animated: false, completion: nil)
+    func configure(with viewController: UIViewController, pageIndex: Int, animated: Bool, completion: ((Bool) -> Swift.Void)? = nil) {
+        self.pageViewController.setViewControllers([viewController], direction: .forward, animated: animated, completion: completion)
         self.overlayView.ignoresInternalTitle = false
         self.currentPhotoIndex = pageIndex
         self.overlayView.titleView?.tweenBetweenLowIndex?(pageIndex, highIndex: pageIndex + 1, percent: 0)
@@ -606,6 +609,7 @@ import MobileCoreServices
     }
     
     @objc public func closeAction(_ sender: UIBarButtonItem) {
+        automaticSlideshow.stop()
         self.isForcingNonInteractiveDismissal = true
         self.presentingViewController?.dismiss(animated: true)
     }
@@ -766,6 +770,7 @@ import MobileCoreServices
         var highIndex: Int = NSNotFound
         
         let viewControllers = self.computeVisibleViewControllers(in: scrollView)
+        
         if horizontalSwipeDirection == .left {
             guard let viewController = viewControllers.first else {
                 return

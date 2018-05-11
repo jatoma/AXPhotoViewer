@@ -7,12 +7,14 @@
 
 import UIKit
 
+
+
 ///Handles states of slideshow and
 ///measures time to swap next slide
-class AutomaticSlideshow: NSObject {
+open class AutomaticSlideshow: NSObject {
     private var timer: Timer?
     var nextSlideActionHandler : (()->())?
-    open var timeInterval: TimeInterval = 5
+    open var timeInterval: TimeInterval = 2
     private(set) var isPlaying = false
     var isSuspended = false
 
@@ -23,7 +25,8 @@ class AutomaticSlideshow: NSObject {
 
     func play() {
         timer?.invalidate();
-        timer = Timer.scheduledTimer(timeInterval: timeInterval, target: self,  selector: (#selector(updateTimer)),
+        timer = Timer.scheduledTimer(timeInterval: timeInterval, target: TimerTargetWrapper(interactor: self),
+                                     selector: (#selector(TimerTargetWrapper.timerFunction)),
                                      userInfo: nil, repeats: true)
         isPlaying = true
     }
@@ -38,15 +41,27 @@ class AutomaticSlideshow: NSObject {
         }
     }
 
-    @objc fileprivate func updateTimer(){
-        guard isSuspended else { return }
-
-        DispatchQueue.main.async { [weak self] in
-            self?.nextSlideActionHandler?()
-        }
-    }
-
     deinit {
         timer?.invalidate()
+        timer = nil
+    }
+
+    /// Wrapper for storing weak reference.
+    /// Used in Timer to eliminate retain cycle
+    private class TimerTargetWrapper {
+        weak var interactor: AutomaticSlideshow?
+        init(interactor: AutomaticSlideshow) {
+            self.interactor = interactor
+        }
+
+        @objc func timerFunction(timer: Timer?) {
+            guard let interactor = interactor else { return }
+            
+            if interactor.isSuspended { return }
+            
+            DispatchQueue.main.async { [weak self] in
+                self?.interactor?.nextSlideActionHandler?()
+            }
+        }
     }
 }
