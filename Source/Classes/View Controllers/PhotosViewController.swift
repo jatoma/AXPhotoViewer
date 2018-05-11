@@ -59,10 +59,19 @@ import MobileCoreServices
     /// Alternatively, you may create your own `UIBarButtonItem`s and directly set them _and_ their actions on the `overlayView` property.
     open var actionBarButtonItem: UIBarButtonItem {
         get {
-            return UIBarButtonItem(barButtonSystemItem: .action, target: nil, action: nil)
+            return UIBarButtonItem(barButtonSystemItem: .action, target: self, action: #selector(shareAction(_:)))
         }
     }
-    
+
+    open let automaticSlideshow = AutomaticSlideshow()
+
+    open var slideshowBarButtonItem: UIBarButtonItem {
+        get {
+            let type = automaticSlideshow.isPlaying ? UIBarButtonSystemItem.play : UIBarButtonSystemItem.pause
+            return UIBarButtonItem(barButtonSystemItem: type, target: self, action: #selector(slideshowAction(_:)))
+        }
+    }
+
     /// The `TransitionInfo` passed in at initialization. This object is used to define functionality for the presentation and dismissal
     /// of the `PhotosViewController`.
     open fileprivate(set) var transitionInfo = TransitionInfo()
@@ -374,18 +383,29 @@ import MobileCoreServices
             closeBarButtonItem.action = #selector(closeAction(_:))
             self.overlayView.leftBarButtonItem = closeBarButtonItem
             
-            let actionBarButtonItem = self.actionBarButtonItem
-            actionBarButtonItem.target = self
-            actionBarButtonItem.action = #selector(shareAction(_:))
-            self.overlayView.rightBarButtonItem = actionBarButtonItem
-        
+          
+            self.overlayView.rightBarButtonItems = [actionBarButtonItem, slideshowBarButtonItem]
+            
             self.view.addSubview(self.overlayView)
         }
+        
+       
+        automaticSlideshow.nextSlideActionHandler = { [weak self] in
+            self?.slideToNext()
+        }
+        automaticSlideshow.play()
     }
     
+    open override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        automaticSlideshow.isSuspended = true
+    }
+    
+
     open override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        
+        automaticSlideshow.isSuspended = false
+
         if self.isFirstAppearance {
             self.overlayView.setShowInterface(true, animated: true, alongside: { [weak self] in
                 self?.updateStatusBarAppearance(show: true)
@@ -477,21 +497,34 @@ import MobileCoreServices
         }
     }
     
+    
+    func slideToNext(){
+        let nextPhotoIndex = self.currentPhotoIndex + 1
+        let initialPhotoIdex = 0
+        if let nextController = (self.makePhotoViewController(for: nextPhotoIndex) ?? self.makePhotoViewController(for: initialPhotoIdex)) {
+            slide(to: nextController, animated: true)
+        }
+    }
+    
+    func slide(to photoViewController: PhotoViewController, animated: Bool) {
+        configure(with: photoViewController, pageIndex: photoViewController.pageIndex, animated: animated)
+    }
+    
+    func configure(with viewController: UIViewController, pageIndex: Int, animated: Bool) {
+        self.pageViewController.setViewControllers([viewController], direction: .forward, animated: false, completion: nil)
+        self.overlayView.ignoresInternalTitle = false
+        self.currentPhotoIndex = pageIndex
+        self.overlayView.titleView?.tweenBetweenLowIndex?(pageIndex, highIndex: pageIndex + 1, percent: 0)
+    }
+    
     // MARK: - Page VC Configuration
     fileprivate func configurePageViewController() {
-        func configure(with viewController: UIViewController, pageIndex: Int) {
-            self.pageViewController.setViewControllers([viewController], direction: .forward, animated: false, completion: nil)
-            self.overlayView.ignoresInternalTitle = false
-            self.currentPhotoIndex = pageIndex
-            self.overlayView.titleView?.tweenBetweenLowIndex?(pageIndex, highIndex: pageIndex + 1, percent: 0)
-        }
-        
         guard let photoViewController = self.makePhotoViewController(for: self.dataSource.initialPhotoIndex) else {
-            configure(with: UIViewController(), pageIndex: 0)
+            configure(with: UIViewController(), pageIndex: 0, animated: false)
             return
         }
-        
-        configure(with: photoViewController, pageIndex: photoViewController.pageIndex)
+
+        slide(to: photoViewController, animated: false)
         self.loadPhotos(at: self.dataSource.initialPhotoIndex)
     }
     
@@ -576,6 +609,12 @@ import MobileCoreServices
         self.isForcingNonInteractiveDismissal = true
         self.presentingViewController?.dismiss(animated: true)
     }
+    
+    @objc public func slideshowAction(_ sender: UIBarButtonItem) {
+        self.overlayView.rightBarButtonItems = [actionBarButtonItem, slideshowBarButtonItem]
+        automaticSlideshow.toggle()
+    }
+
     
     // MARK: - Loading helpers
     fileprivate func loadPhotos(at index: Int) {
@@ -764,12 +803,14 @@ import MobileCoreServices
             
             if let photo = self.dataSource.photo(at: lowIndex) {
                 self.didNavigateTo(photo: photo, at: lowIndex)
+                automaticSlideshow.restart()
             }
         } else if swipePercent > 0.5 && self.currentPhotoIndex != highIndex {
             self.currentPhotoIndex = highIndex
             
             if let photo = self.dataSource.photo(at: highIndex) {
                 self.didNavigateTo(photo: photo, at: highIndex)
+                automaticSlideshow.restart()
             }
         }
         
