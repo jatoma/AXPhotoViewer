@@ -56,9 +56,9 @@ open class AutomaticSlideshow: NSObject {
 
         @objc func timerFunction(timer: Timer?) {
             guard let interactor = interactor else { return }
-            
+
             if interactor.isSuspended { return }
-            
+
             DispatchQueue.main.async { [weak self] in
                 self?.interactor?.nextSlideActionHandler?()
             }

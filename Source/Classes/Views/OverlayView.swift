@@ -8,6 +8,8 @@
 
 import UIKit
 
+private var kvoContext: UInt8 = 1
+
 @objc(AXOverlayView) open class OverlayView: UIView, CaptionViewDelegate {
     
     /// The caption view to be used in the overlay.
@@ -31,6 +33,7 @@ import UIKit
             self.captionView.animateCaptionInfoChanges = self.animateCaptionViewChanges
         }
     }
+    
     
     /// The title view displayed in the navigation bar. This view is sized and centered between the `leftBarButtonItems` and `rightBarButtonItems`.
     /// This is prioritized over `title`.
@@ -171,11 +174,11 @@ import UIKit
             self?.setNeedsLayout()
         }
     }
-    
+
     public required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-    
+
     deinit {
         NotificationCenter.default.removeObserver(self)
     }
@@ -224,22 +227,22 @@ import UIKit
         if alpha == 1 {
             self.isHidden = false
         }
-        
+
         let animations = { [weak self] in
             self?.alpha = alpha
             closure?()
         }
-        
+
         let internalCompletion: (_ finished: Bool) -> Void = { [weak self] (finished) in
             guard alpha == 0 else {
                 completion?(finished)
                 return
             }
-            
+
             self?.isHidden = true
             completion?(finished)
         }
-        
+
         if animated {
             UIView.animate(withDuration: AXConstants.frameAnimDuration,
                            animations: animations,

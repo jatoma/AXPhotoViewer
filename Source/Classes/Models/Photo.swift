@@ -8,6 +8,10 @@
 
 /// A simple wrapper class for `PhotoProtocol`.
 @objc(AXPhoto) open class Photo: NSObject, PhotoProtocol {
+  
+    
+    
+    
     
     public init(attributedTitle: NSAttributedString? = nil,
                 attributedDescription: NSAttributedString? = nil,
@@ -50,4 +54,8 @@
     @objc public var videoUrl: URL?
     
     @objc public var isVideo: Bool
+    
+    @objc public var videoPlaybackUrl: URL? {
+        return videoUrl
+    }
 }

@@ -31,4 +31,7 @@
     @objc var videoUrl: URL? { get }
     
     @objc var isVideo: Bool { get }
+    
+    @objc var videoPlaybackUrl: URL? { get }
+    
 }

@@ -18,6 +18,8 @@ import MobileCoreServices
     /// The underlying `OverlayView` that is used for displaying photo captions, titles, and actions.
     open let overlayView = OverlayView()
     
+    open var shouldHaveHiddenNavigationInitially = true
+    
     /// The photos to display in the PhotosViewController.
     open var dataSource = PhotosDataSource() {
         didSet {
@@ -29,7 +31,7 @@ import MobileCoreServices
             
             self.pageViewController.dataSource = (self.dataSource.numberOfPhotos > 1) ? self : nil
             self.networkIntegration.cancelAllLoads()
-            self.configurePageViewController()
+            self.configureInitialPageViewController()
         }
     }
     
@@ -62,12 +64,14 @@ import MobileCoreServices
             return UIBarButtonItem(barButtonSystemItem: .action, target: self, action: #selector(shareAction(_:)))
         }
     }
+    
+    open var automaticSlideshowLoopEnabled = false
 
     open let automaticSlideshow = AutomaticSlideshow()
 
     open var slideshowBarButtonItem: UIBarButtonItem {
         get {
-            let type = automaticSlideshow.isPlaying ? UIBarButtonSystemItem.play : UIBarButtonSystemItem.pause
+            let type = automaticSlideshow.isPlaying ? UIBarButtonSystemItem.pause : UIBarButtonSystemItem.play
             return UIBarButtonItem(barButtonSystemItem: type, target: self, action: #selector(slideshowAction(_:)))
         }
     }
@@ -83,7 +87,8 @@ import MobileCoreServices
     /// The view controller containing the photo currently being shown.
     public var currentPhotoViewController: PhotoViewController? {
         get {
-            return self.orderedViewControllers.filter({ $0.pageIndex == currentPhotoIndex }).first
+            //return self.cachedPhotoViewControllers.filter({ $0.pageIndex == currentPhotoIndex }).first
+            return self.pageViewController.viewControllers?.first as? PhotoViewController
         }
     }
     
@@ -93,6 +98,8 @@ import MobileCoreServices
             self.updateOverlay(for: currentPhotoIndex)
         }
     }
+    
+    public fileprivate(set) var previousPhotoIndex: Int = 0
     
     // MARK: - Private/internal variables
     fileprivate enum SwipeDirection {
@@ -117,11 +124,9 @@ import MobileCoreServices
     }
     
     fileprivate var isSizeTransitioning = false
+    fileprivate var isViewTransitioning = false
     fileprivate var isForcingNonInteractiveDismissal = false
     fileprivate var isFirstAppearance = true
-    
-    fileprivate var orderedViewControllers = [PhotoViewController]()
-    fileprivate var recycledViewControllers = [PhotoViewController]()
     
     fileprivate var transitionController: PhotosTransitionController?
     fileprivate let notificationCenter = NotificationCenter()
@@ -323,22 +328,10 @@ import MobileCoreServices
                                                        options: [UIPageViewControllerOptionInterPageSpacingKey: self.pagingConfig.interPhotoSpacing])
     }
     
-    deinit {
-        // this setup happens in `viewDidLoad()`
-        // if the view is never loaded, we don't need to remove any observers
-        if self.isViewLoaded {
-            self.recycledViewControllers.removeLifeycleObserver(self)
-            self.orderedViewControllers.removeLifeycleObserver(self)
-            self.pageViewController.scrollView.removeContentOffsetObserver(self)
-        }
-    }
+   
     
     open override func didReceiveMemoryWarning() {
         super.didReceiveMemoryWarning()
-        
-        self.recycledViewControllers.removeLifeycleObserver(self)
-        self.recycledViewControllers.removeAll()
-        
         self.reduceMemoryForPhotos(at: self.currentPhotoIndex)
     }
 
@@ -346,6 +339,13 @@ import MobileCoreServices
         super.viewDidLoad()
         
         self.view.backgroundColor = .black
+
+        automaticSlideshow.nextSlideActionHandler = { [weak self] in
+            if let weakSelf = self, weakSelf.canSlideToNext() {
+                weakSelf.slideToNext()
+            }
+        }
+        automaticSlideshow.play()
         
         self.transitionController = PhotosTransitionController(photosViewController: self, transitionInfo: self.transitionInfo)
         self.transitionController?.delegate = self
@@ -357,11 +357,11 @@ import MobileCoreServices
             self.transitioningDelegate = self
             self.transitionController?.containerViewController = nil
         }
-        
+   
+
         if self.pageViewController.view.superview == nil {
             self.pageViewController.delegate = self
             self.pageViewController.dataSource = (self.dataSource.numberOfPhotos > 1) ? self : nil
-            self.pageViewController.scrollView.addContentOffsetObserver(self)
             
             self.singleTapGestureRecognizer.numberOfTapsRequired = 1
             self.singleTapGestureRecognizer.addTarget(self, action: #selector(singleTapAction(_:)))
@@ -371,43 +371,32 @@ import MobileCoreServices
             self.view.addSubview(self.pageViewController.view)
             self.pageViewController.didMove(toParentViewController: self)
             
-            self.configurePageViewController()
+            self.configureInitialPageViewController()
         }
         
         if self.overlayView.superview == nil {
             self.overlayView.tintColor = .white
-            self.overlayView.setShowInterface(false, animated: false)
-            
+            self.overlayView.setShowInterface(true, animated: false)
             let closeBarButtonItem = self.closeBarButtonItem
             closeBarButtonItem.target = self
             closeBarButtonItem.action = #selector(closeAction(_:))
             self.overlayView.leftBarButtonItem = closeBarButtonItem
-            
-          
             self.overlayView.rightBarButtonItems = [actionBarButtonItem, slideshowBarButtonItem]
-            
+            self.overlayView.setShowInterface(false, animated: false)
+            self.currentPhotoViewController?.showVideoControls(visible: false)
             self.view.addSubview(self.overlayView)
         }
-        
-       
-        automaticSlideshow.nextSlideActionHandler = { [weak self] in
-            self?.slideToNext()
-        }
-
-        automaticSlideshow.play()
     }
     
     open override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        automaticSlideshow.isSuspended = true
     }
 
     open override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        automaticSlideshow.isSuspended = false
-
-        if self.isFirstAppearance {
+        if self.isFirstAppearance && !shouldHaveHiddenNavigationInitially{
             self.overlayView.setShowInterface(true, animated: true, alongside: { [weak self] in
+                self?.currentPhotoViewController?.showVideoControls(visible: true)
                 self?.updateStatusBarAppearance(show: true)
             })
             self.isFirstAppearance = false
@@ -500,34 +489,63 @@ import MobileCoreServices
     
     func slideToNext(){
         let nextPhotoIndex = self.currentPhotoIndex + 1
-        let initialPhotoIdex = 0
-        if let nextController = (self.makePhotoViewController(for: nextPhotoIndex) ?? self.makePhotoViewController(for: initialPhotoIdex)) {
+        if let nextController = self.makePhotoViewController(for: nextPhotoIndex) {
             loadPhotos(at: nextController.pageIndex)
+            self.isViewTransitioning = true
             slide(to: nextController, animated: true, completion: { [weak self] (result) in
+               
                 self?.reduceMemoryForPhotos(at: nextController.pageIndex)
+                self?.isViewTransitioning = false
             })
+        }else {
+            //start from begining if enabled
+            if !automaticSlideshowLoopEnabled { return }
+            let initialPhotoIdex = 0
+            self.isViewTransitioning = true
+            if  let initialController = self.makePhotoViewController(for: initialPhotoIdex){
+                loadPhotos(at: initialController.pageIndex)
+                slide(to: initialController, animated: true, completion: { [weak self] (result) in
+                    self?.reduceMemoryForPhotos(at: initialController.pageIndex)
+                    self?.isViewTransitioning = false
+                })
+            }
         }
     }
+    
+    func canSlideToNext() -> Bool {
+        if self.isViewTransitioning { return false }
+        
+        guard let currentPhotoViewController = self.currentPhotoViewController else { return false }
+        
+        let isPlayingVideo = currentPhotoViewController.isPlayingVideo()
+        let isLoading = currentPhotoViewController.isLoading
+        let canSlide = !isPlayingVideo && !isLoading
+        return canSlide
+    }
+    
+
     
     func slide(to photoViewController: PhotoViewController, animated: Bool, completion: ((Bool) -> Swift.Void)? = nil) {
         configure(with: photoViewController, pageIndex: photoViewController.pageIndex, animated: animated, completion: completion)
     }
     
     func configure(with viewController: UIViewController, pageIndex: Int, animated: Bool, completion: ((Bool) -> Swift.Void)? = nil) {
+        self.currentPhotoIndex = pageIndex
         self.pageViewController.setViewControllers([viewController], direction: .forward, animated: animated, completion: completion)
         self.overlayView.ignoresInternalTitle = false
-        self.currentPhotoIndex = pageIndex
         self.overlayView.titleView?.tweenBetweenLowIndex?(pageIndex, highIndex: pageIndex + 1, percent: 0)
     }
     
     // MARK: - Page VC Configuration
-    fileprivate func configurePageViewController() {
+    fileprivate func configureInitialPageViewController() {
         guard let photoViewController = self.makePhotoViewController(for: self.dataSource.initialPhotoIndex) else {
             configure(with: UIViewController(), pageIndex: 0, animated: false)
             return
         }
-
-        slide(to: photoViewController, animated: false)
+        isViewTransitioning = true
+        slide(to: photoViewController, animated: false , completion: { [weak self] (result) in
+            self?.isViewTransitioning = false
+            })
         self.loadPhotos(at: self.dataSource.initialPhotoIndex)
     }
     
@@ -553,6 +571,7 @@ import MobileCoreServices
     @objc fileprivate func singleTapAction(_ sender: UITapGestureRecognizer) {
         let show = (self.overlayView.alpha == 0)
         self.overlayView.setShowInterface(show, animated: true, alongside: { [weak self] in
+            self?.currentPhotoViewController?.showVideoControls(visible: show)
             self?.updateStatusBarAppearance(show: show)
         })
     }
@@ -615,8 +634,8 @@ import MobileCoreServices
     }
     
     @objc public func slideshowAction(_ sender: UIBarButtonItem) {
-        self.overlayView.rightBarButtonItems = [actionBarButtonItem, slideshowBarButtonItem]
         automaticSlideshow.toggle()
+        self.overlayView.rightBarButtonItems = [actionBarButtonItem, slideshowBarButtonItem]
     }
 
     
@@ -674,31 +693,17 @@ import MobileCoreServices
             return nil
         }
         
-        var photoViewController: PhotoViewController
-        
-        if self.recycledViewControllers.count > 0 {
-            photoViewController = self.recycledViewControllers.removeLast()
-            photoViewController.prepareForReuse()
-        } else {
-            guard let loadingView = self.makeLoadingView(for: pageIndex) else {
-                return nil
-            }
-            
-            photoViewController = PhotoViewController(loadingView: loadingView, notificationCenter: self.notificationCenter)
-            photoViewController.addLifecycleObserver(self)
-            photoViewController.delegate = self
-            
-            self.singleTapGestureRecognizer.require(toFail: photoViewController.zoomingImageView.doubleTapGestureRecognizer)
+        guard let loadingView = self.makeLoadingView(for: pageIndex) else {
+            return nil
         }
         
+        let photoViewController = PhotoViewController(loadingView: loadingView, notificationCenter: self.notificationCenter)
+        photoViewController.delegate = self
+        
+        self.singleTapGestureRecognizer.require(toFail: photoViewController.zoomingImageView.doubleTapGestureRecognizer)
+    
         photoViewController.pageIndex = pageIndex
         photoViewController.applyPhoto(photo)
-        
-        let insertionIndex = self.orderedViewControllers.insertionIndex(of: photoViewController, isOrderedBefore: { $0.pageIndex < $1.pageIndex })
-        if !insertionIndex.alreadyExists {
-            self.orderedViewControllers.insert(photoViewController, at: insertionIndex.index)
-        }
-        
         return photoViewController
     }
     
@@ -710,150 +715,18 @@ import MobileCoreServices
         
         return loadingViewType.init() as? LoadingViewProtocol
     }
-    
-    // MARK: - Recycling
-    fileprivate func recyclePhotoViewController(_ photoViewController: PhotoViewController) {
-        if self.recycledViewControllers.contains(photoViewController) {
-            return
-        }
-        
-        let insertionIndex = self.orderedViewControllers.insertionIndex(of: photoViewController, isOrderedBefore: { $0.pageIndex < $1.pageIndex })
-        if insertionIndex.alreadyExists {
-            self.orderedViewControllers.remove(at: insertionIndex.index)
-        }
-        
-        self.recycledViewControllers.append(photoViewController)
-    }
-    
-    // MARK: - KVO
-    open override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
-        if context == &PhotoViewControllerLifecycleContext {
-            self.lifecycleContextDidUpdate(object: object, change: change)
-        } else if context == &PhotoViewControllerContentOffsetContext {
-            self.contentOffsetContextDidUpdate(object: object, change: change)
-        } else {
-            super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
-        }
-    }
-    
-    fileprivate func lifecycleContextDidUpdate(object: Any?, change: [NSKeyValueChangeKey : Any]?) {
-        guard let photoViewController = object as? PhotoViewController else {
-            return
-        }
-        
-        if change?[.newKey] is NSNull {
-            self.recyclePhotoViewController(photoViewController)
-        }
-    }
-    
-    fileprivate func contentOffsetContextDidUpdate(object: Any?, change: [NSKeyValueChangeKey : Any]?) {
-        guard let scrollView = object as? UIScrollView, !self.isSizeTransitioning else {
-            return
-        }
-        
-        var percent: CGFloat
-        if self.pagingConfig.navigationOrientation == .horizontal {
-            percent = (scrollView.contentOffset.x - scrollView.frame.size.width) / scrollView.frame.size.width
-        } else {
-            percent = (scrollView.contentOffset.y - scrollView.frame.size.height) / scrollView.frame.size.height
-        }
-        
-        var horizontalSwipeDirection: SwipeDirection = .none
-        if percent > 0 {
-            horizontalSwipeDirection = .right
-        } else if percent < 0 {
-            horizontalSwipeDirection = .left
-        }
-        
-        let swipePercent = (horizontalSwipeDirection == .left) ? (1 - abs(percent)) : abs(percent)
-        var lowIndex: Int = NSNotFound
-        var highIndex: Int = NSNotFound
-        
-        let viewControllers = self.computeVisibleViewControllers(in: scrollView)
-        
-        if horizontalSwipeDirection == .left {
-            guard let viewController = viewControllers.first else {
-                return
-            }
-            
-            if viewControllers.count > 1 {
-                lowIndex = viewController.pageIndex
-                if lowIndex < self.dataSource.numberOfPhotos {
-                    highIndex = lowIndex + 1
-                }
-            } else {
-                highIndex = viewController.pageIndex
-            }
-        } else if horizontalSwipeDirection == .right {
-            guard let viewController = viewControllers.last else {
-                return
-            }
-            
-            if viewControllers.count > 1 {
-                highIndex = viewController.pageIndex
-                if highIndex > 0 {
-                    lowIndex = highIndex - 1
-                }
-            } else {
-                lowIndex = viewController.pageIndex
-            }
-        }
-        
-        guard lowIndex != NSNotFound && highIndex != NSNotFound else {
-            return
-        }
-        
-        if swipePercent < 0.5 && self.currentPhotoIndex != lowIndex  {
-            self.currentPhotoIndex = lowIndex
-            
-            if let photo = self.dataSource.photo(at: lowIndex) {
-                self.didNavigateTo(photo: photo, at: lowIndex)
-                automaticSlideshow.restart()
-            }
-        } else if swipePercent > 0.5 && self.currentPhotoIndex != highIndex {
-            self.currentPhotoIndex = highIndex
-            
-            if let photo = self.dataSource.photo(at: highIndex) {
-                self.didNavigateTo(photo: photo, at: highIndex)
-                automaticSlideshow.restart()
-            }
-        }
-        
-        self.overlayView.titleView?.tweenBetweenLowIndex?(lowIndex, highIndex: highIndex, percent: percent)
-    }
-    
-    fileprivate func computeVisibleViewControllers(in referenceView: UIScrollView) -> [PhotoViewController] {
-        var visibleViewControllers = [PhotoViewController]()
-        
-        for viewController in self.orderedViewControllers {
-            if viewController.view.frame.equalTo(.zero) {
-                continue
-            }
-            
-            let origin = CGPoint(x: viewController.view.frame.origin.x - (self.pagingConfig.navigationOrientation == .horizontal ?
-                                                                          (self.pagingConfig.interPhotoSpacing / 2) : 0),
-                                 y: viewController.view.frame.origin.y - (self.pagingConfig.navigationOrientation == .vertical ?
-                                                                          (self.pagingConfig.interPhotoSpacing / 2) : 0))
-            let size = CGSize(width: viewController.view.frame.size.width + ((self.pagingConfig.navigationOrientation == .horizontal) ?
-                                                                             self.pagingConfig.interPhotoSpacing : 0),
-                              height: viewController.view.frame.size.height + ((self.pagingConfig.navigationOrientation == .vertical) ?
-                                                                               self.pagingConfig.interPhotoSpacing : 0))
-            let conversionRect = CGRect(origin: origin, size: size)
-            
-            if referenceView.convert(conversionRect, from: viewController.view.superview).intersects(referenceView.bounds) {
-                visibleViewControllers.append(viewController)
-            }
-        }
-        
-        return visibleViewControllers
-    }
+
+ 
     
     // MARK: - UIPageViewControllerDataSource
     public func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
         guard let viewController = pendingViewControllers.first as? PhotoViewController else {
             return
         }
-        
+        self.currentPhotoViewController?.isTransitioning = true
+        isViewTransitioning = true
+        previousPhotoIndex = self.currentPhotoIndex
+        self.currentPhotoIndex = viewController.pageIndex
         self.loadPhotos(at: viewController.pageIndex)
     }
     
@@ -862,7 +735,20 @@ import MobileCoreServices
             return
         }
         
+        self.currentPhotoIndex = viewController.pageIndex
         self.reduceMemoryForPhotos(at: viewController.pageIndex)
+        
+        if let previousViewController = previousViewControllers.first as? PhotoViewController  {
+            //only reload in case new page index
+            if previousPhotoIndex != viewController.pageIndex {
+                viewController.didBecameActive()
+                previousViewController.didResignActive()
+            }
+        }else {
+            viewController.didBecameActive()
+        }
+        isViewTransitioning = false
+        automaticSlideshow.restart()
     }
     
     public func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
@@ -914,8 +800,22 @@ import MobileCoreServices
         return self.maximumZoomScale(for: photo, minimumZoomScale: minimumZoomScale, imageSize: imageSize)
     }
     
-    public func photoViewController(_ photoViewController: PhotoViewController, playVideoAt index: Int, asset: PhotoProtocol) {
-        playVideo(at: index, asset: asset)
+    public func photoViewController(_ photoViewController: PhotoViewController, didStartPlayingVideoAt index: Int, asset: PhotoProtocol) {
+    }
+
+    public func photoViewController(_ photoViewController: PhotoViewController, didEndPlayingVideoAt index: Int, asset: PhotoProtocol){
+        if automaticSlideshow.isPlaying {
+            slideToNext()
+        }
+    }
+
+    public func photoViewControllerShouldAutoPlayVideo(_ photoViewController: PhotoViewController) -> Bool {
+        return automaticSlideshow.isPlaying
+    }
+    
+    public func photoViewControllerShouldShowVideoControls(_ photoViewController: PhotoViewController) -> Bool {
+    
+        return !self.overlayView.isHidden
     }
     
     // MARK: - PhotosViewControllerDelegate calls
@@ -930,6 +830,7 @@ import MobileCoreServices
     ///   - index: The `index` in the dataSource of the `Photo` being transitioned to.
     @objc(didNavigateToPhoto:atIndex:)
     open func didNavigateTo(photo: PhotoProtocol, at index: Int) {
+       
         self.delegate?.photosViewController?(self, didNavigateTo: photo, at: index)
     }
     
@@ -1001,13 +902,11 @@ import MobileCoreServices
         self.delegate?.photosViewController?(self, actionCompletedWith: activityType, for: photo)
     }
     
-    @objc(playVideoAtIndex:forAsset:)
-    open func playVideo(at index: Int, asset: PhotoProtocol) {
-        self.delegate?.photosViewController?(self, playVideoAt: index, asset: asset)
-    }
+  
 
     // MARK: - NetworkIntegrationDelegate
     public func networkIntegration(_ networkIntegration: NetworkIntegrationProtocol, loadDidFinishWith photo: PhotoProtocol) {
+    
         if let imageData = photo.imageData {
             photo.ax_loadingState = .loaded
             DispatchQueue.main.async { [weak self] in
@@ -1059,54 +958,6 @@ import MobileCoreServices
 
 }
 
-// MARK: - Convenience extensions
-fileprivate var PhotoViewControllerLifecycleContext: UInt8 = 0
-fileprivate extension Array where Element: UIViewController {
-    
-    func removeLifeycleObserver(_ observer: NSObject) -> Void {
-        self.forEach({ ($0 as UIViewController).removeLifecycleObserver(observer) })
-    }
-    
-}
-
-fileprivate extension UIViewController {
-    
-    func addLifecycleObserver(_ observer: NSObject) -> Void {
-        self.addObserver(observer, forKeyPath: #keyPath(parent), options: .new, context: &PhotoViewControllerLifecycleContext)
-    }
-    
-    func removeLifecycleObserver(_ observer: NSObject) -> Void {
-        self.removeObserver(observer, forKeyPath: #keyPath(parent), context: &PhotoViewControllerLifecycleContext)
-    }
-    
-}
-
-fileprivate extension UIPageViewController {
-    
-    var scrollView: UIScrollView {
-        get {
-            guard let scrollView = self.view.subviews.filter({ $0 is UIScrollView }).first as? UIScrollView else {
-                fatalError("Unable to locate the underlying `UIScrollView`")
-            }
-            
-            return scrollView
-        }
-    }
-    
-}
-
-fileprivate var PhotoViewControllerContentOffsetContext: UInt8 = 0
-fileprivate extension UIScrollView {
-    
-    func addContentOffsetObserver(_ observer: NSObject) -> Void {
-        self.addObserver(observer, forKeyPath: #keyPath(contentOffset), options: .new, context: &PhotoViewControllerContentOffsetContext)
-    }
-    
-    func removeContentOffsetObserver(_ observer: NSObject) -> Void {
-        self.removeObserver(observer, forKeyPath: #keyPath(contentOffset), context: &PhotoViewControllerContentOffsetContext)
-    }
-    
-}
 
 // MARK: - PhotosViewControllerDelegate
 @objc(AXPhotosViewControllerDelegate) public protocol PhotosViewControllerDelegate: AnyObject, NSObjectProtocol {
@@ -1176,8 +1027,6 @@ fileprivate extension UIScrollView {
                                        actionCompletedWith activityType: UIActivityType,
                                        for photo: PhotoProtocol)
     
-    @objc(photosViewController:playVideoAtIndex:forAsset:)
-    optional func photosViewController(_ photosViewController: PhotosViewController, playVideoAt index: Int, asset: PhotoProtocol)
 }
 
 // MARK: - Notification definitions

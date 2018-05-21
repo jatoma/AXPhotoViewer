@@ -8,19 +8,28 @@
 
 import UIKit
 import FLAnimatedImage
+import NVActivityIndicatorView
 
-@objc(AXPhotoViewController) open class PhotoViewController: UIViewController, PageableViewControllerProtocol, ZoomingImageViewDelegate {
+@objc(AXPhotoViewController) open class PhotoViewController: UIViewController, PageableViewControllerProtocol, ZoomingImageViewDelegate, BMPlayerDelegate {
+
+    
     
     public weak var delegate: PhotoViewControllerDelegate?
     public var pageIndex: Int = 0
+    
+    public var isTransitioning = false
+    
+    public var isLoading = false
     
     fileprivate(set) var loadingView: LoadingViewProtocol?
     private var playVideoButton: UIButton?
 
     var zoomingImageView = ZoomingImageView()
+    var videoPlayerView : BMPlayer?
     
     fileprivate var photo: PhotoProtocol?
     fileprivate weak var notificationCenter: NotificationCenter?
+
     
     public init(loadingView: LoadingViewProtocol, notificationCenter: NotificationCenter) {
         self.loadingView = loadingView
@@ -64,6 +73,8 @@ import FLAnimatedImage
         if let playVideoButton = self.playVideoButton {
             self.view.addSubview(playVideoButton)
         }
+
+        setupVideoPlayerView()
     }
     
     open override func viewWillLayoutSubviews() {
@@ -74,6 +85,45 @@ import FLAnimatedImage
                                                                       y: floor((self.view.bounds.size.height - loadingViewSize.height) / 2)),
                                                       size: loadingViewSize)
         self.playVideoButton?.center = self.view.center
+        
+        videoPlayerView?.snp.makeConstraints { (make) in
+            make.edges.equalTo(self.view).inset(UIEdgeInsets.zero)
+        }
+    }
+    
+    open func didBecameActive() {
+        isTransitioning = false
+        if (self.delegate?.photoViewControllerShouldAutoPlayVideo(self))! {
+            playIfVideo()
+        }else{
+            self.videoPlayerView?.isHidden = true
+        }
+    }
+    
+    
+    open func didResignActive() {
+        videoPlayerView?.seek(0)
+        videoPlayerView?.pause()
+    }
+    
+    open override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if !isTransitioning {
+            didResignActive()
+        }
+    }
+    
+    override open func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        let showVideo =  (photo?.isVideo ?? false) &&  (self.delegate?.photoViewControllerShouldAutoPlayVideo(self) ?? false)
+        self.videoPlayerView?.isHidden = !showVideo
+    }
+    
+    override open func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !isTransitioning {
+            didBecameActive()
+        }
     }
     
     private func setupPlayVideoButton() -> UIButton? {
@@ -83,8 +133,7 @@ import FLAnimatedImage
         button.isHidden = true
         button.setImage(image, for: .normal)
         button.frame.size = image.size
-        button.addTarget(self, action: #selector(playVideo), for: .touchUpInside)
-        
+        button.addTarget(self, action: #selector(playIfVideo), for: .touchUpInside)
         return button
     }
     
@@ -102,10 +151,12 @@ import FLAnimatedImage
         switch photo.ax_loadingState {
         case .loading, .notLoaded, .loadingCancelled:
             resetImageView()
+            self.isLoading = true
             self.loadingView?.startLoading(initialProgress: photo.ax_progress)
         case .loadingFailed:
             resetImageView()
             let error = photo.ax_error ?? NSError()
+            self.isLoading = false
             self.loadingView?.showError(error, retryHandler: { [weak self] in
                 guard let uSelf = self else {
                     return
@@ -113,6 +164,7 @@ import FLAnimatedImage
                 
                 self?.delegate?.photoViewController(uSelf, retryDownloadFor: photo)
                 self?.loadingView?.removeError()
+                self?.isLoading = true
                 self?.loadingView?.startLoading(initialProgress: photo.ax_progress)
             })
         case .loaded:
@@ -122,6 +174,7 @@ import FLAnimatedImage
             }
             
             self.loadingView?.stopLoading()
+            self.isLoading = false
             
             if let imageData = photo.imageData {
                 self.zoomingImageView.animatedImage = FLAnimatedImage(animatedGIFData: imageData)
@@ -144,6 +197,10 @@ import FLAnimatedImage
         self.zoomingImageView.animatedImage = nil
         self.playVideoButton?.isHidden = true
         self.zoomingImageView.isUserInteractionEnabled = true
+        self.isLoading = false
+        isTransitioning = false
+        
+        setupVideoPlayerView()
     }
     
     // MARK: - ZoomingImageViewDelegate
@@ -190,18 +247,83 @@ import FLAnimatedImage
                 
                 self?.delegate?.photoViewController(uSelf, retryDownloadFor: photo)
                 self?.loadingView?.removeError()
+                self?.isLoading = true
                 self?.loadingView?.startLoading(initialProgress: photo.ax_progress)
                 self?.view.setNeedsLayout()
             })
-            
             self.view.setNeedsLayout()
         }
     }
 
-    @objc fileprivate func playVideo() {
-        guard let photo = photo else { return }
+    @objc fileprivate func playIfVideo() {
+        guard let photo = photo, photo.isVideo else {
+            videoPlayerView?.isHidden = true
+            return
+        }
+        videoPlayerView?.isHidden = false
+        isLoading = true
+        let asset = BMPlayerResource(url: photo.videoPlaybackUrl!,
+                                     name: photo.attributedTitle??.string ?? "")
+        videoPlayerView?.setVideo(resource: asset)
+        videoPlayerView?.delegate = self
+        videoPlayerView?.play()
+        showVideoControls(visible: self.delegate?.photoViewControllerShouldShowVideoControls(self) ?? false)
+        self.delegate?.photoViewController(self, didStartPlayingVideoAt: self.pageIndex, asset: photo)
+    }
+    
+    public func bmPlayer(player: BMPlayer, playerStateDidChange state: BMPlayerState) {
+         guard let photo = photo else { return }
+
+        if state == BMPlayerState.playedToTheEnd {
+            self.delegate?.photoViewController(self, didEndPlayingVideoAt: self.pageIndex, asset: photo)
+            videoPlayerView?.isHidden = true
+        }
+    }
+    
+    public func bmPlayer(player: BMPlayer, loadedTimeDidChange loadedDuration: TimeInterval, totalDuration: TimeInterval) {
         
-        self.delegate?.photoViewController(self, playVideoAt: self.pageIndex, asset: photo)
+    }
+    
+    public func bmPlayer(player: BMPlayer, playTimeDidChange currentTime: TimeInterval, totalTime: TimeInterval) {
+        
+    }
+    
+    public func bmPlayer(player: BMPlayer, playerIsPlaying playing: Bool) {
+        if isLoading && playing {
+            isLoading = false
+        }
+    }
+    
+    func setupVideoPlayerView() {
+        BMPlayerConf.allowLog = false
+        BMPlayerConf.shouldAutoPlay = true
+        BMPlayerConf.tintColor = .white
+        BMPlayerConf.topBarShowInCase = .none
+        BMPlayerConf.loaderType  = NVActivityIndicatorType.ballRotateChase
+        BMPlayerConf.enablePanGestures = false
+        BMPlayerConf.enableTouchGesture = false
+        BMPlayerConf.enableAutoHideControls = false
+        BMPlayerConf.enableBrightnessGestures = false
+        BMPlayerConf.enableVolumeGestures = false
+        BMPlayerConf.enablePlaytimeGestures = false
+        
+        videoPlayerView?.removeFromSuperview()
+        videoPlayerView = nil
+        videoPlayerView = BMPlayer()
+        self.view.addSubview(videoPlayerView!)
+        videoPlayerView?.isHidden = false
+    }
+    
+    func showVideoControls(visible: Bool) {
+        videoPlayerView?.showControlView(visible: visible)
+    }
+    
+    func isPlayingVideo() -> Bool {
+        guard let videoPlayerView = videoPlayerView else {
+                return false
+        }
+    
+        return videoPlayerView.isPlaying
     }
 }
 
@@ -216,6 +338,9 @@ import FLAnimatedImage
                              minimumZoomScale: CGFloat,
                              imageSize: CGSize) -> CGFloat
     
-    @objc(photoViewController:playVideoAtIndex:forAsset:)
-    func photoViewController(_ photoViewController: PhotoViewController, playVideoAt index: Int, asset: PhotoProtocol)
+    @objc(photoViewController:didStartPlayingVideoAt:forAsset:)
+    func photoViewController(_ photoViewController: PhotoViewController, didStartPlayingVideoAt index: Int, asset: PhotoProtocol)
+    func photoViewController(_ photoViewController: PhotoViewController, didEndPlayingVideoAt index: Int, asset: PhotoProtocol)
+    func photoViewControllerShouldAutoPlayVideo(_ photoViewController: PhotoViewController) -> Bool
+    func photoViewControllerShouldShowVideoControls(_ photoViewController: PhotoViewController) -> Bool
 }
