@@ -28,7 +28,8 @@
         self.url = url
         self.videoUrl = nil
         self.isVideo = false
-        
+        self.isDownloaded = false
+
         super.init()
     }
     
@@ -58,4 +59,6 @@
     @objc public var videoPlaybackUrl: URL? {
         return videoUrl
     }
+    
+    @objc public var isDownloaded: Bool
 }
