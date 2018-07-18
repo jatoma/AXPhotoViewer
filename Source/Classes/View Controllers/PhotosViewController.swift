@@ -72,7 +72,10 @@ import MobileCoreServices
     open var slideshowBarButtonItem: UIBarButtonItem {
         get {
             let type = automaticSlideshow.isPlaying ? UIBarButtonSystemItem.pause : UIBarButtonSystemItem.play
-            return UIBarButtonItem(barButtonSystemItem: type, target: self, action: #selector(slideshowAction(_:)))
+            let button = UIBarButtonItem(barButtonSystemItem: type, target: self, action: #selector(slideshowAction(_:)))
+            let topImageOffset: CGFloat = 4.0
+            button.imageInsets = UIEdgeInsets(top: topImageOffset, left: 0, bottom: 0, right: 0)
+            return button
         }
     }
 
@@ -381,7 +384,6 @@ import MobileCoreServices
             closeBarButtonItem.target = self
             closeBarButtonItem.action = #selector(closeAction(_:))
             self.overlayView.leftBarButtonItem = closeBarButtonItem
-            self.overlayView.rightBarButtonItems = [actionBarButtonItem, slideshowBarButtonItem]
             self.overlayView.setShowInterface(false, animated: false)
             self.currentPhotoViewController?.showVideoControls(visible: false)
             self.view.addSubview(self.overlayView)
@@ -566,6 +568,19 @@ import MobileCoreServices
         self.overlayView.captionView.applyCaptionInfo(attributedTitle: photo.attributedTitle ?? nil,
                                                       attributedDescription: photo.attributedDescription ?? nil,
                                                       attributedCredit: photo.attributedCredit ?? nil)
+        self.updateBarButtons(for: photoIndex)
+    }
+    
+    private func updateBarButtons(for photoIndex: Int){
+        guard let photo = self.dataSource.photo(at: photoIndex) else {
+            return
+        }
+
+        if (photo.isVideo && !photo.isDownloaded) {
+            self.overlayView.rightBarButtonItems = [slideshowBarButtonItem]
+        }else {
+            self.overlayView.rightBarButtonItems = [actionBarButtonItem, slideshowBarButtonItem]
+        }
     }
     
     @objc fileprivate func singleTapAction(_ sender: UITapGestureRecognizer) {
@@ -602,12 +617,15 @@ import MobileCoreServices
         }
         
         var anyRepresentation: Any?
-        if let imageData = photo.imageData {
+        
+        if photo.isVideo && photo.isDownloaded {
+            anyRepresentation = photo.videoPlaybackUrl
+        } else if let imageData = photo.imageData {
             anyRepresentation = imageData
         } else if let image = photo.image {
             anyRepresentation = image
         }
-        
+
         guard let uAnyRepresentation = anyRepresentation else {
             return
         }
